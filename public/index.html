@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en" data-theme="classic">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<meta name="theme-color" content="#000000" id="metaTheme">
+<title>Music</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="wall" aria-hidden="true"></div>
+
+<header class="nav" id="nav">
+  <button class="ib" id="navBack" type="button" aria-label="Back" hidden>
+    <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M15.7 4.3a1 1 0 0 1 0 1.4L9.4 12l6.3 6.3a1 1 0 1 1-1.4 1.4l-7-7a1 1 0 0 1 0-1.4l7-7a1 1 0 0 1 1.4 0Z"/></svg>
+  </button>
+  <div class="nav-title" id="navTitle">Home</div>
+  <div class="nav-actions">
+    <button class="ib" id="navSearch" type="button" aria-label="Search">
+      <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path d="M10.5 3a7.5 7.5 0 0 1 5.9 12.1l4.3 4.3a1 1 0 0 1-1.4 1.4l-4.3-4.3A7.5 7.5 0 1 1 10.5 3Zm0 2a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11Z"/></svg>
+    </button>
+    <button class="ib" id="navTogether" type="button" aria-label="Listening together" hidden>
+      <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><path d="M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm7 0a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM9 13c-3.3 0-6 1.8-6 4v2a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1v-2c0-2.2-2.7-4-6-4Zm7.5.2c2.6.3 4.5 1.9 4.5 3.8v2a1 1 0 0 1-1 1h-2.6a2.9 2.9 0 0 0 .6-1.7v-2.3c0-1.2-.5-2.3-1.5-3.2Z"/></svg>
+      <span class="tg-n" id="tgCount">1</span>
+    </button>
+    <button class="ib" id="navMenu" type="button" aria-label="More options">
+      <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+    </button>
+    <button class="ib avatar" id="navProfile" type="button" aria-label="Settings and themes"><span>N</span></button>
+  </div>
+</header>
+
+<main id="main">
+  <section class="view" id="v-home">
+    <span class="page-deco" aria-hidden="true"></span>
+    <h1 class="page-title" id="greet">Good evening</h1>
+    <div class="tiles" id="homeTiles"></div>
+    <div id="homeRecentWrap">
+      <h2 class="sec">Recently played</h2>
+      <div class="hrow" id="homeRecent"></div>
+    </div>
+    <div id="homeArtistsWrap" hidden>
+      <h2 class="sec">Your artists</h2>
+      <div class="hrow" id="homeArtists"></div>
+    </div>
+    <div class="empty-card" id="homeEmpty" hidden>
+      <div class="empty-art"></div>
+      <div class="empty-t">Nothing played yet</div>
+      <div class="empty-s">Search for a song and it will show up here.</div>
+    </div>
+    <h2 class="sec">Start with</h2>
+    <div class="chips" id="homeChips"></div>
+  </section>
+
+  <section class="view" id="v-search" hidden>
+    <span class="page-deco" aria-hidden="true"></span>
+    <h1 class="page-title">Search</h1>
+    <form class="searchbar" id="searchForm" role="search">
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M10.5 3a7.5 7.5 0 0 1 5.9 12.1l4.3 4.3a1 1 0 0 1-1.4 1.4l-4.3-4.3A7.5 7.5 0 1 1 10.5 3Zm0 2a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11Z"/></svg>
+      <input id="q" type="search" placeholder="What do you want to listen to?" autocomplete="off" enterkeyhint="search" aria-label="Search songs or artists">
+    </form>
+    <p class="notice" id="searchNote" hidden></p>
+    <div id="artistsWrap" hidden>
+      <h2 class="sec">Artists</h2>
+      <div class="hrow" id="artistRow"></div>
+    </div>
+    <h2 class="sec" id="songsHead" hidden>Songs</h2>
+    <div id="browse">
+      <h2 class="sec">Browse all</h2>
+      <div class="browse-grid" id="browseGrid"></div>
+    </div>
+    <ul class="tracklist" id="results" hidden></ul>
+  </section>
+
+  <section class="view" id="v-library" hidden>
+    <span class="page-deco" aria-hidden="true"></span>
+    <h1 class="page-title">Your Library</h1>
+    <button class="row lib-new" id="newPlaylist" type="button">
+      <span class="lib-art plus"><svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M12 4a1 1 0 0 1 1 1v6h6a1 1 0 1 1 0 2h-6v6a1 1 0 1 1-2 0v-6H5a1 1 0 1 1 0-2h6V5a1 1 0 0 1 1-1Z"/></svg></span>
+      <span class="txt"><span class="rt">Create playlist</span><span class="ra">Make your own mix</span></span>
+    </button>
+    <ul class="tracklist" id="libList"></ul>
+    <div id="ytBox" hidden>
+      <h2 class="sec">From YouTube</h2>
+      <button class="row lib-new" id="ytSignIn" type="button" hidden>
+        <span class="lib-art plus"><svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm0 2a7 7 0 0 1 5.3 2.4h-5.3a4.6 4.6 0 0 0-4.2 2.7L5.5 7.5A7 7 0 0 1 12 5Zm0 4.2a2.8 2.8 0 1 1 0 5.6 2.8 2.8 0 0 1 0-5.6Z"/></svg></span>
+        <span class="txt"><span class="rt">Sign in with Google</span><span class="ra">Show your YouTube Music playlists</span></span>
+      </button>
+      <ul class="tracklist" id="ytList"></ul>
+      <button class="row" id="ytSignOut" type="button" hidden>
+        <span class="txt"><span class="rt">Sign out of Google</span><span class="ra">Your playlists are only read, never changed</span></span>
+      </button>
+    </div>
+  </section>
+
+  <section class="view" id="v-entity" hidden>
+    <div class="hero-art" id="entArt"></div>
+    <h1 class="ent-title" id="entTitle"></h1>
+    <p class="ent-meta" id="entMeta"></p>
+    <div class="actions">
+      <div class="act-left">
+        <button class="ib heartbtn" id="entPin" type="button" aria-label="Pin to Home" hidden>
+          <svg class="heart" viewBox="0 0 24 24" width="28" height="28" aria-hidden="true"><path d="M12 20.5s-7.5-4.6-9.3-9.2C1.5 8 3.4 4.8 6.6 4.8c1.9 0 3.5 1 4.4 2.6.9-1.6 2.5-2.6 4.4-2.6 3.2 0 5.1 3.2 3.9 6.5-1.8 4.6-7.3 9.2-7.3 9.2Z"/></svg>
+        </button>
+        <button class="ib" id="entShuffle" type="button" aria-label="Shuffle">
+          <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M17 3.3a1 1 0 0 1 1.7-.7l3 3a1 1 0 0 1 0 1.4l-3 3A1 1 0 0 1 17 9.3V8h-1.4c-1 0-1.9.5-2.4 1.3L9.7 14.4A4.6 4.6 0 0 1 5.8 16.5H3a1 1 0 1 1 0-2h2.8c1 0 1.9-.5 2.4-1.3l3.5-5.1A4.6 4.6 0 0 1 15.6 6H17V3.3ZM3 7.5h2.8c1.5 0 3 .7 3.9 2l.4.6-1.2 1.8-.9-1.3c-.5-.8-1.4-1.3-2.4-1.3H3a1 1 0 0 1 0-2Zm14 7.2a1 1 0 0 1 1.7-.7l3 3a1 1 0 0 1 0 1.4l-3 3a1 1 0 0 1-1.7-.7V19h-1.4a4.6 4.6 0 0 1-3.8-2l-.6-.9 1.2-1.8.9 1.3c.5.8 1.4 1.3 2.4 1.3H17v-2.2Z"/></svg>
+        </button>
+        <button class="ib" id="entSmart" type="button" aria-label="Smart shuffle" aria-pressed="false"><svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M12 2.5l1.9 6.1 6.1 1.9-6.1 1.9L12 18.5l-1.9-6.1L4 10.5l6.1-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg></button>
+        <button class="ib" id="entMore" type="button" aria-label="More options" hidden>
+          <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+        </button>
+      </div>
+      <button class="play-big" id="entPlay" type="button" aria-label="Play">
+        <svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+      </button>
+    </div>
+    <ul class="tracklist" id="entList"></ul>
+    <div class="empty-card" id="entEmpty" hidden>
+      <div class="empty-art"></div>
+      <div class="empty-t" id="entEmptyT"></div>
+      <div class="empty-s" id="entEmptyS"></div>
+    </div>
+  </section>
+
+  <p class="legal"><a href="/privacy.html">Privacy</a><a href="/terms.html">Terms</a></p>
+</main>
+
+<div class="video" id="videoBox"><div id="yt"></div></div>
+
+<div class="mini" id="mini" role="button" tabindex="0" aria-label="Open now playing">
+  <img id="miniArt" alt="" width="40" height="40">
+  <div class="mini-txt">
+    <div class="mini-title" id="miniTitle"><span></span></div>
+    <div class="mini-artist" id="miniArtist"><span></span></div>
+  </div>
+  <button class="ib" id="miniPlay" type="button" aria-label="Play">
+    <svg class="i-play" viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+    <svg class="i-pause" viewBox="0 0 24 24" width="26" height="26" aria-hidden="true" hidden><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg>
+  </button>
+  <button class="ib" id="miniNext" type="button" aria-label="Next">
+    <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M16 5h2v14h-2zM4 5v14l10.5-7z"/></svg>
+  </button>
+  <div class="mini-bar"><i id="miniBar"></i></div>
+</div>
+
+<nav class="tabbar" id="tabbar" aria-label="Main">
+  <button class="tab active" type="button" data-tab="home">
+    <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M12 2.9a1.5 1.5 0 0 1 1 .4l8 7.1a1.5 1.5 0 0 1 .5 1.1V20a1.5 1.5 0 0 1-1.5 1.5h-4.5a1 1 0 0 1-1-1V15h-5v5.5a1 1 0 0 1-1 1H4A1.5 1.5 0 0 1 2.5 20v-9.5a1.5 1.5 0 0 1 .5-1.1l8-7.1a1.5 1.5 0 0 1 1-.4Z"/></svg>
+    <span>Home</span>
+  </button>
+  <button class="tab" type="button" data-tab="search">
+    <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M10.5 3a7.5 7.5 0 0 1 5.9 12.1l4.3 4.3a1 1 0 0 1-1.4 1.4l-4.3-4.3A7.5 7.5 0 1 1 10.5 3Zm0 2a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11Z"/></svg>
+    <span>Search</span>
+  </button>
+  <button class="tab" type="button" data-tab="library">
+    <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M4 3.5a1 1 0 0 1 1 1v15a1 1 0 1 1-2 0v-15a1 1 0 0 1 1-1Zm5 0a1 1 0 0 1 1 1v15a1 1 0 1 1-2 0v-15a1 1 0 0 1 1-1Zm4.6.1a1 1 0 0 1 1.3-.6l5.5 2a1 1 0 0 1 .6 1.3l-4.6 12.9a1 1 0 0 1-1.3.6l-5.5-2a1 1 0 0 1-.6-1.3Z"/></svg>
+    <span>Your Library</span>
+  </button>
+</nav>
+
+<section class="np" id="np" aria-hidden="true" aria-label="Now playing">
+  <div class="np-bg"></div>
+  <div class="np-in">
+    <div class="np-top">
+      <button class="ib" id="npClose" type="button" aria-label="Close now playing">
+        <svg viewBox="0 0 24 24" width="28" height="28" aria-hidden="true"><path d="M5.3 8.3a1 1 0 0 1 1.4 0L12 13.6l5.3-5.3a1 1 0 1 1 1.4 1.4l-6 6a1 1 0 0 1-1.4 0l-6-6a1 1 0 0 1 0-1.4Z"/></svg>
+      </button>
+      <div class="np-from"><span>Playing from</span><b id="npFrom">Search</b></div>
+      <button class="ib" id="npMore" type="button" aria-label="More options">
+        <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+      </button>
+    </div>
+    <div class="np-art" id="npArt"></div>
+    <div class="np-scroll" id="npScroll">
+      <div class="np-meta">
+        <div class="np-txt"><div class="np-title" id="npTitle"></div><div class="np-artist" id="npArtist"></div></div>
+        <button class="ib heartbtn" id="npLike" type="button" aria-label="Like">
+          <svg class="heart" viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><path d="M12 20.5s-7.5-4.6-9.3-9.2C1.5 8 3.4 4.8 6.6 4.8c1.9 0 3.5 1 4.4 2.6.9-1.6 2.5-2.6 4.4-2.6 3.2 0 5.1 3.2 3.9 6.5-1.8 4.6-7.3 9.2-7.3 9.2Z"/></svg>
+        </button>
+      </div>
+      <button class="people-pill" id="npPeople" type="button" hidden aria-label="People listening">
+        <span class="stack" id="npStack"></span><span class="pp-text" id="npPeopleText"></span>
+      </button>
+      <div class="seek">
+        <input id="seek" type="range" min="0" max="1000" value="0" aria-label="Seek">
+        <div class="seek-t"><span id="cur">0:00</span><span id="dur">0:00</span></div>
+      </div>
+      <div class="np-ctrls">
+        <button class="ib" id="npShuffle" type="button" aria-label="Shuffle">
+          <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M17 3.3a1 1 0 0 1 1.7-.7l3 3a1 1 0 0 1 0 1.4l-3 3A1 1 0 0 1 17 9.3V8h-1.4c-1 0-1.9.5-2.4 1.3L9.7 14.4A4.6 4.6 0 0 1 5.8 16.5H3a1 1 0 1 1 0-2h2.8c1 0 1.9-.5 2.4-1.3l3.5-5.1A4.6 4.6 0 0 1 15.6 6H17V3.3ZM3 7.5h2.8c1.5 0 3 .7 3.9 2l.4.6-1.2 1.8-.9-1.3c-.5-.8-1.4-1.3-2.4-1.3H3a1 1 0 0 1 0-2Zm14 7.2a1 1 0 0 1 1.7-.7l3 3a1 1 0 0 1 0 1.4l-3 3a1 1 0 0 1-1.7-.7V19h-1.4a4.6 4.6 0 0 1-3.8-2l-.6-.9 1.2-1.8.9 1.3c.5.8 1.4 1.3 2.4 1.3H17v-2.2Z"/></svg>
+        </button>
+        <button class="ib big" id="npPrev" type="button" aria-label="Previous">
+          <svg viewBox="0 0 24 24" width="34" height="34" aria-hidden="true"><path d="M6 5h2v14H6zM20 5v14L9.5 12z"/></svg>
+        </button>
+        <button class="play-big" id="npPlay" type="button" aria-label="Play">
+          <svg class="i-play" viewBox="0 0 24 24" width="32" height="32" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+          <svg class="i-pause" viewBox="0 0 24 24" width="32" height="32" aria-hidden="true" hidden><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg>
+        </button>
+        <button class="ib big" id="npNext" type="button" aria-label="Next">
+          <svg viewBox="0 0 24 24" width="34" height="34" aria-hidden="true"><path d="M16 5h2v14h-2zM4 5v14l10.5-7z"/></svg>
+        </button>
+        <button class="ib" id="npAdd" type="button" aria-label="Add to playlist">
+          <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M12 4a1 1 0 0 1 1 1v6h6a1 1 0 1 1 0 2h-6v6a1 1 0 1 1-2 0v-6H5a1 1 0 1 1 0-2h6V5a1 1 0 0 1 1-1Z"/></svg>
+        </button>
+      </div>
+      <div class="smart-row">
+        <button class="smart" id="npSmart" type="button" aria-pressed="false"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M12 2.5l1.9 6.1 6.1 1.9-6.1 1.9L12 18.5l-1.9-6.1L4 10.5l6.1-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg><span>Smart shuffle</span></button>
+      </div>
+      <div class="card">
+        <h3>Lyrics</h3>
+        <div class="lyr-body plain" id="lyrBody"></div>
+      </div>
+      <div class="card">
+        <h3>Next in queue</h3>
+        <ul class="tracklist" id="npQueue"></ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="scrim" id="scrim" hidden></div>
+<div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-hidden="true">
+  <div class="grab"></div>
+  <div class="sheet-head"><div class="sh-title" id="shTitle"></div><div class="sh-sub" id="shSub"></div></div>
+  <div class="sheet-body" id="shBody"></div>
+</div>
+
+<div class="modal" id="dlg" hidden>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="dlgTitle">
+    <h3 id="dlgTitle"></h3>
+    <input id="dlgInput" type="text" maxlength="60" autocomplete="off">
+    <div class="modal-actions">
+      <button type="button" id="dlgCancel">Cancel</button>
+      <button type="button" id="dlgOk" class="pri">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script src="/app.js"></script>
+</body>
+</html>

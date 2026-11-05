@@ -1,0 +1,18 @@
+{
+  "name": "ios-music-player",
+  "version": "3.0.0",
+  "description": "iOS-style music player that plays through the official YouTube player, with synced lyrics and autoplay",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "youtubei.js": "latest"
+  }
+}

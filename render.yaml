@@ -1,0 +1,18 @@
+# One-click setup on Render (render.com): New + > Blueprint > pick this repo.
+services:
+  - type: web
+    name: nandify
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: PUBLIC_URL
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: YT_API_KEY
+        sync: false
