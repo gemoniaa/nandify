@@ -167,7 +167,7 @@
       if (t.canPlayType('audio/mp4; codecs="mp4a.40.2"')) list.push('mp4');
       return list.join(',') || 'mp4';
     }
-    _setMode(m) { this.mode = m; document.body.classList.toggle('audio-mode', m === 'audio'); this._emit('modechange'); }
+    _setMode(m) { this.mode = m; document.body.classList.toggle('audio-mode', this.pref === 'audio'); this._emit('modechange'); }
     load(id, start = 0) {
       this.id = id; this.start = start; this._started = false; clearTimeout(this._timer);
       if (this.pref === 'audio' && Date.now() >= this.offUntil) {
@@ -194,14 +194,24 @@
       clearTimeout(this._timer);
       this.fails += 1;
       if (this.fails >= 2) this.offUntil = Date.now() + 10 * 60 * 1000; // audio stream keeps failing: use video for a while
-      if (!this._notified) { this._notified = true; this._emit('fallback'); }
+      if (!this._notified) {
+        this._notified = true;
+        fetch('/api/stream/' + this.id + '?prefer=' + this._formats(), { headers: { Range: 'bytes=0-1' } })
+          .then(async (r) => (r.ok ? 'stream could not start' : ((await r.json().catch(() => ({}))).error || 'HTTP ' + r.status)))
+          .catch(() => 'no answer from the server')
+          .then((why) => { this.why = String(why).slice(0, 140); this._emit('fallback'); });
+      }
       this._switchToVideo(this.start);
     }
     setPreferred(m) {
       this.pref = m;
       try { localStorage.setItem('nandify.vmode', m); } catch { /* ignore */ }
+      document.body.classList.toggle('audio-mode', m === 'audio');
+      this._emit('modechange');
+      if (!this.id) return;
+      if (m === 'audio' && this.mode === 'audio') return;   // already playing the stream
+      if (m === 'video' && this.mode === 'video') return;   // the video is already the sound, just show it
       if (m === 'audio') this.offUntil = 0;
-      if (!this.id) { this._setMode(m); return; }
       const pos = this.currentTime || 0;
       this.load(this.id, pos);
     }
@@ -209,7 +219,7 @@
     pause() { this.userPausedAt = Date.now(); if (this.mode === 'video') this.yt.pause(); else this.a.pause(); }
   }
   const audio = new Engine();
-  document.body.classList.toggle('audio-mode', audio.mode === 'audio');
+  document.body.classList.toggle('audio-mode', audio.pref === 'audio');
 
   /* ================================================================== */
   /* App state                                                           */
@@ -1186,10 +1196,10 @@
 
   /* ---------- audio / video mode ---------- */
   const vmodeBtn = $('#vmode');
-  function paintVmode() { if (vmodeBtn) vmodeBtn.textContent = audio.mode === 'audio' ? '\u{1F3A7} Audio  \u00B7  tap for video' : '\u{1F3AC} Video  \u00B7  tap for audio'; }
-  if (vmodeBtn) vmodeBtn.addEventListener('click', (e) => { e.stopPropagation(); if (T.role === 'guest' && !T.ctl) { audio.setPreferred(audio.pref === 'audio' ? 'video' : 'audio'); } else audio.setPreferred(audio.mode === 'audio' ? 'video' : 'audio'); paintVmode(); });
+  function paintVmode() { if (vmodeBtn) vmodeBtn.textContent = audio.pref === 'audio' ? '\u{1F3A7} Audio  \u00B7  tap for video' : '\u{1F3AC} Video  \u00B7  tap for audio'; }
+  if (vmodeBtn) vmodeBtn.addEventListener('click', (e) => { e.stopPropagation(); if (false) { /* local only */ } else audio.setPreferred(audio.pref === 'audio' ? 'video' : 'audio'); paintVmode(); });
   audio.addEventListener('modechange', paintVmode);
-  audio.addEventListener('fallback', () => toast('Audio stream is not available for this song, showing the video instead'));
+  audio.addEventListener('fallback', () => toast('Audio stream blocked (' + (audio.why || 'unknown') + '). Playing through the video player, hidden.'));
   paintVmode();
 
   /* ---------- paint the player ---------- */
@@ -1237,7 +1247,10 @@
     });
   }
 
+  let uiPlaying = null;
+  setInterval(() => { if (cur() && uiPlaying !== null && uiPlaying !== !audio.paused) setPlayingUI(!audio.paused); }, 600);
   function setPlayingUI(playing) {
+    uiPlaying = playing;
     [el.miniPlay, el.npPlay].forEach((b) => {
       $('.i-play', b).hidden = playing;
       $('.i-pause', b).hidden = !playing;
@@ -1277,27 +1290,16 @@
 
   /* ---------- engine events ---------- */
   let errTimer = 0;
-  /* Phones pause the video when the browser goes to the background. A silent looping sound keeps the page
-     alive, we resume the video if it was paused by the phone (not by the user) and again when we are back. */
-  const keep = (() => {
-    const n = 8000, b = new Uint8Array(44 + n), v = new DataView(b.buffer);
-    const w = (o, t) => [...t].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
-    w(0, 'RIFF'); v.setUint32(4, 36 + n, true); w(8, 'WAVEfmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
-    v.setUint32(24, 8000, true); v.setUint32(28, 8000, true); v.setUint16(32, 1, true); v.setUint16(34, 8, true); w(36, 'data'); v.setUint32(40, n, true);
-    for (let i = 0; i < n; i++) b[44 + i] = 128 + (i % 2 ? 1 : -1);
-    const a = new Audio(URL.createObjectURL(new Blob([b], { type: 'audio/wav' })));
-    a.loop = true; a.preload = 'auto';
-    return a;
-  })();
+  /* Phones pause the video when the browser goes to the background. We resume it if the phone paused it
+     (not the listener), and again when the listener is back. */
   let wasPlaying = false, resumeTries = 0;
   const userPaused = () => Date.now() - audio.userPausedAt < 2500;
-  audio.addEventListener('play', () => { setPlayingUI(true); if (audio.mode === 'video') keep.play().catch(() => {}); else keep.pause(); tgPush(true); });
+  audio.addEventListener('play', () => { setPlayingUI(true); tgPush(true); });
   audio.addEventListener('pause', () => {
     setPlayingUI(false);
     if (document.hidden && wasPlaying && !userPaused() && !audio.error && cur() && resumeTries < 5) {
       resumeTries += 1; setTimeout(() => { if (audio.paused && !userPaused()) audio.play(); }, 350); return; // the phone paused it, not the listener
     }
-    if (userPaused() || !document.hidden) keep.pause();
     tgPush(true);
   });
   document.addEventListener('visibilitychange', () => {

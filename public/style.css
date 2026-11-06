@@ -709,5 +709,5 @@ body.is-playing .mini .ib:first-of-type svg { transition: transform 0.2s var(--s
 
 .vmode { position: absolute; top: 8px; right: 8px; z-index: 3; padding: 6px 12px; border-radius: 999px; background: rgba(0, 0, 0, 0.62); color: #fff; font-size: 12px; font-weight: 700; -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
 body.audio-mode .video { background-color: #000; background-image: var(--cover); background-size: cover; background-position: center; }
-body.audio-mode .video #yt { visibility: hidden; }
+body.audio-mode .video #yt { opacity: 0; pointer-events: none; }
 body.audio-mode:not(.np-open) .video { opacity: 0; pointer-events: none; }
