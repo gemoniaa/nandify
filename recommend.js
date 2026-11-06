@@ -74,15 +74,31 @@ function vibeScore(t, vp) {
   return s;
 }
 
+// What the listener is hearing right now: its movie/album, artist, co-artists (duet partner, music director)
+// and a "theme" (style words + language) to search for similar songs.
+const LANG = { deva: 'hindi', tamil: 'tamil', telugu: 'telugu', hangul: 'korean', cjk: 'japanese', arabic: 'arabic' };
+const norm = (v) => String(v || '').toLowerCase().replace(/\(.*?\)|\[.*?\]/g, ' ').replace(/original motion picture soundtrack|original soundtrack|soundtrack|ost/g, ' ').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+export function describeFocus({ title = '', artist = '', album = '' } = {}) {
+  const names = String(artist).split(/,|&|;| feat\.? | ft\.? | x /i).map((x) => x.trim()).filter(Boolean);
+  const movie = (String(title).match(/from\s+["“'‘]?([^"”')\]]{2,40})/i) || [])[1] || '';
+  const alb = String(album || '').trim() || (movie ? `${movie.trim()} soundtrack` : '');
+  const tags = [...styleTags({ title })].filter((g) => !['sad', 'cover', 'rap', 'rock'].includes(g) || true).slice(0, 2);
+  const lang = LANG[scriptOf(title)] || '';
+  const theme = tags.length || lang ? [...tags, lang, 'songs'].filter(Boolean).join(' ') : '';
+  return { album: alb, albumKey: norm(alb), artist: names[0] || '', collabs: names.slice(1), theme };
+}
+
 export function scoreCandidates(lists, {
   affinity = new Set(), avoid = new Set(), exclude = new Set(), jitter = 0.04,
-  vibe = null, love = new Set(), hate = new Set(), hour = new Set(),
+  vibe = null, love = new Set(), hate = new Set(), hour = new Set(), focus = null,
 } = {}) {
   const byId = new Map();
-  for (const { weight, tracks } of lists) {
+  for (const { weight, tracks, kind = 'radio' } of lists) {
     tracks.forEach((t, rank) => {
       if (exclude.has(t.id)) return;
-      const e = byId.get(t.id) || { track: t, score: 0, seeds: 0 };
+      const e = byId.get(t.id) || { track: t, score: 0, seeds: 0, kinds: new Set() };
+      if (!e.track.album && t.album) e.track = { ...e.track, album: t.album };
+      e.kinds.add(kind);
       e.score += weight / (rank + 3);
       e.seeds += 1;
       byId.set(t.id, e);
@@ -98,23 +114,39 @@ export function scoreCandidates(lists, {
       if (hate.has(k)) s -= 0.35;
       if (hour.has(k)) s += 0.1;
       if (vibe) s += vibeScore(e.track, vibe);
+      if (focus) {
+        const who = String(e.track.artist || '').toLowerCase();
+        if (focus.albumKey && norm(e.track.album) === focus.albumKey) s += 0.5;       // same movie / album
+        if (focus.artist && who.split(/,|&/)[0].trim() === focus.artist.toLowerCase()) s += 0.1; // same artist
+        if (focus.collabs.some((c) => who.includes(c.toLowerCase()))) s += 0.18;      // same duet partner / music director
+      }
       if (JUNK.test(e.track.title || '')) s -= 0.5;
-      return { ...e.track, score: Number((s + Math.random() * jitter).toFixed(4)) };
+      return { ...e.track, src: [...e.kinds], score: Number((s + Math.random() * jitter).toFixed(4)) };
     })
     .sort((a, b) => b.score - a.score);
 }
 
-// At most two songs per artist, like a real mix.
-export function pickMix(ranked, limit) {
+// At most two songs per artist and four per album, like a real mix. Then make sure the mix is not only YouTube's
+// "up next" list: at least one song each from the same movie/album, the artist's other songs, the duet partner
+// and the theme search (when those exist), so the next songs are varied but still the same vibe.
+export function pickMix(ranked, limit, focus = null) {
   const per = new Map();
+  const perAlbum = new Map();
   const results = [];
-  for (const t of ranked) {
-    const k = artistKey(t);
-    const n = per.get(k) || 0;
-    if (n >= 2) continue;
-    per.set(k, n + 1);
-    results.push(t);
-    if (results.length >= limit) break;
+  const ok = (t) => (per.get(artistKey(t)) || 0) < 2 && (!t.album || (perAlbum.get(norm(t.album)) || 0) < 4);
+  const take = (t) => { per.set(artistKey(t), (per.get(artistKey(t)) || 0) + 1); if (t.album) perAlbum.set(norm(t.album), (perAlbum.get(norm(t.album)) || 0) + 1); results.push(t); };
+  for (const t of ranked) { if (results.length >= limit) break; if (ok(t)) take(t); }
+  if (focus) {
+    for (const kind of ['album', 'collab', 'theme', 'artist']) {
+      if (results.some((t) => t.src?.includes(kind))) continue;
+      const pick = ranked.find((t) => t.src?.includes(kind) && !results.includes(t) && ok(t));
+      if (!pick) continue;
+      const protectedKinds = ['album', 'collab', 'theme', 'artist'];
+      const victim = [...results].reverse().find((t) => !t.src?.some((k) => protectedKinds.includes(k)));
+      if (!victim) continue;
+      results.splice(results.indexOf(victim), 1, pick);
+    }
+    results.sort((a, b) => b.score - a.score);
   }
-  return results;
+  return results.map(({ src, ...t }) => t);
 }

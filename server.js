@@ -3,7 +3,8 @@ import { Innertube, UniversalCache } from 'youtubei.js';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { vibeProfile, scoreCandidates, pickMix, splitNames } from './recommend.js';
+import { vibeProfile, scoreCandidates, pickMix, splitNames, describeFocus } from './recommend.js';
+import { mountStream } from './stream.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -33,7 +34,8 @@ function limit(name, max) {
 setInterval(() => { const now = Date.now(); for (const [k, b] of buckets) if (b.reset < now) buckets.delete(k); }, 60_000).unref();
 const limitTogether = limit('together', 400);
 const limitApi = limit('api', 240);
-app.use('/api', (req, res, next) => (req.path.startsWith('/together') ? limitTogether(req, res, next) : limitApi(req, res, next)));
+const limitStream = limit('stream', 150);
+app.use('/api', (req, res, next) => (req.path.startsWith('/together') ? limitTogether(req, res, next) : req.path.startsWith('/stream') ? limitStream(req, res, next) : limitApi(req, res, next)));
 
 /* ------------------------------------------------------------------ */
 /* YouTube.js session (created once, reused)                           */
@@ -92,6 +94,7 @@ function normalize(item) {
     artist,
     duration: Number(item.duration?.seconds) || 0,
     thumbnail,
+    album: toText(item.album?.name) || '',
   };
 }
 
@@ -204,6 +207,7 @@ function normalizePanelItem(item) {
       '',
     duration: Number(v.duration?.seconds) || 0,
     thumbnail: art ? (art.startsWith('//') ? `https:${art}` : upsizeArt(art)) : `https://i.ytimg.com/vi/${id}/mqdefault.jpg`,
+    album: toText(v.album?.name) || '',
   };
 }
 
@@ -251,6 +255,42 @@ app.get('/api/related/:id', async (req, res) => {
   }
 });
 
+// Extra candidate sources beyond YouTube's own "up next": the same album (movie), the artist's best songs,
+// the co-artists (music director, duet partner) and a theme search built from the song's style and language.
+const sourceCache = new Map();
+const withTimeout = (p, ms = 5000) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
+async function cached(key, fn) {
+  const hit = sourceCache.get(key);
+  if (hit && Date.now() - hit.at < SEARCH_TTL * 4) return hit.data;
+  const data = await fn();
+  if (data.length) { if (sourceCache.size > 200) sourceCache.delete(sourceCache.keys().next().value); sourceCache.set(key, { at: Date.now(), data }); }
+  return data;
+}
+const albumSongs = (album, artist) => cached('al|' + album + '|' + artist, async () => {
+  const yt = await getYT();
+  const res = await yt.music.search(`${album} ${artist}`.trim(), { type: 'album' });
+  let id = '';
+  for (const shelf of res.contents ?? []) for (const it of shelf.contents ?? []) { id = id || it.id || it.endpoint?.payload?.browseId || ''; }
+  if (!id) return [];
+  const page = await yt.music.getAlbum(id);
+  const out = [];
+  for (const it of page?.contents ?? []) { const t = normalize(it); if (t) out.push({ ...t, artist: t.artist || artist, album: toText(page?.header?.title) || album }); }
+  return out;
+});
+const artistSongs = (name) => cached('ar|' + name.toLowerCase(), async () => {
+  const yt = await getYT();
+  const [first] = await findArtists(name);
+  if (!first) return [];
+  const page = await yt.music.getArtist(first.id);
+  const out = [];
+  for (const sec of page?.sections ?? []) {
+    for (const it of sec.contents ?? []) { const t = normalize(it); if (t) out.push({ ...t, artist: t.artist || first.name }); }
+    if (out.length) break;
+  }
+  return out;
+});
+const themeSongs = (q) => cached('th|' + q, async () => (await searchTracks(q)).slice(0, 20));
+
 const SEED_CAP = 6;
 const splitIds = (v) => String(v ?? '').split(',').map((s) => s.trim()).filter((s) => ID_RE.test(s));
 
@@ -263,8 +303,19 @@ app.get('/api/recommend', async (req, res) => {
   const settled = await Promise.allSettled(
     seeds.map((id, i) => relatedFor(id, titles[i]).then((tracks) => ({ weight: Math.max(0.4, 1 - i * 0.12), tracks }))),
   );
-  const lists = settled.filter((r) => r.status === 'fulfilled').map((r) => r.value);
+  const lists = settled.filter((r) => r.status === 'fulfilled').map((r) => ({ ...r.value, kind: 'radio' }));
   if (!lists.length) return res.status(502).json({ error: 'Could not load recommendations.' });
+
+  // What the listener is hearing right now (the first seed): its movie/album, artist, co-artists and theme.
+  const albums = splitNames(req.query.albums);
+  const seedArtists = splitNames(req.query.seedArtists);
+  const focus = describeFocus({ title: titles[0], artist: seedArtists[0], album: albums[0] });
+  const extra = [];
+  if (focus.album) extra.push(withTimeout(albumSongs(focus.album, focus.artist)).then((tracks) => ({ weight: 1.1, tracks, kind: 'album' })));
+  if (focus.artist) extra.push(withTimeout(artistSongs(focus.artist)).then((tracks) => ({ weight: 0.8, tracks, kind: 'artist' })));
+  focus.collabs.slice(0, 2).forEach((c) => extra.push(withTimeout(artistSongs(c)).then((tracks) => ({ weight: 0.7, tracks, kind: 'collab' }))));
+  if (focus.theme) extra.push(withTimeout(themeSongs(focus.theme)).then((tracks) => ({ weight: 0.6, tracks, kind: 'theme' })));
+  (await Promise.allSettled(extra)).forEach((r) => { if (r.status === 'fulfilled' && r.value.tracks.length) lists.push(r.value); });
 
   const lower = (v) => new Set(splitNames(v).map((s) => s.toLowerCase()));
   const exclude = new Set([...seeds, ...splitIds(req.query.exclude)]);
@@ -277,8 +328,9 @@ app.get('/api/recommend', async (req, res) => {
     love: lower(req.query.love),
     hate: lower(req.query.hate),
     hour: lower(req.query.hour),
+    focus,
   });
-  res.json({ results: pickMix(ranked, limit) });
+  res.json({ results: pickMix(ranked, limit, focus) });
 });
 
 function artThumb(x) {
@@ -459,8 +511,11 @@ const rooms = new Map(); // code -> { code, host, members: Map(cid -> { seen }),
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const MAX_ROOMS = 50;
 const MAX_MEMBERS = 20;
-const GUEST_GONE_MS = 25_000;
-const HOST_GONE_MS = 40_000;
+// Smart session lifetime: a reload, a phone lock or a switch to another app must never end the session.
+const ACTIVE_MS = 45_000;         // seen this recently = actively listening
+const GUEST_GONE_MS = 5 * 60_000; // a guest who is silent this long is removed
+const HOST_GRACE_MS = 90_000;     // host silent this long -> hand over to the longest-present active member
+const HOST_GONE_MS = 15 * 60_000; // host silent this long and nobody active -> the session ends
 const CLOSED_KEEP_MS = 30_000;
 
 function newCode() {
@@ -491,7 +546,7 @@ function cleanTrack(t) {
   };
 }
 
-function cleanState(s) {
+function cleanState(s, by) {
   if (!s || typeof s !== 'object') return null;
   const track = s.track ? cleanTrack(s.track) : null;
   if (s.track && !track) return null;
@@ -502,6 +557,7 @@ function cleanState(s) {
     position: Number.isFinite(position) ? Math.max(0, Math.min(36000, position)) : 0,
     queue: (Array.isArray(s.queue) ? s.queue : []).slice(0, 20).map(cleanTrack).filter(Boolean),
     at: Date.now(),
+    by: by || '',
   };
 }
 
@@ -515,12 +571,16 @@ const findRoom = (req, res) => {
 app.post('/api/together/create', jsonBody, (req, res) => {
   if (rooms.size >= MAX_ROOMS) return res.status(503).json({ error: 'Too many sessions right now.' });
   const cid = crypto.randomUUID();
-  const room = { code: newCode(), host: cid, members: new Map([[cid, { seen: Date.now(), name: cleanName(req.body?.name, 'Host') }]]), state: null, v: 1, closed: null };
+  const room = { code: newCode(), host: cid, members: new Map([[cid, { seen: Date.now(), joined: Date.now(), name: cleanName(req.body?.name, 'Host') }]]), state: null, v: 1, closed: null, all: false, notice: null };
   rooms.set(room.code, room);
   res.json({ code: room.code, cid, people: peopleOf(room), now: Date.now() });
 });
 
-const peopleOf = (room) => [...room.members].map(([cid, m]) => ({ id: cid.slice(0, 8), name: m.name, host: cid === room.host }));
+// What a person may do: `play` = choose songs, play, pause, seek. `next` = skip to the next or previous song.
+const BOTH = { play: true, next: true };
+const permOf = (room, cid) => (cid === room.host || room.all === true ? BOTH : { play: room.members.get(cid)?.perm?.play === true, next: room.members.get(cid)?.perm?.next === true });
+const canControl = (room, cid) => { const p = permOf(room, cid); return p.play || p.next; };
+const peopleOf = (room) => [...room.members].map(([cid, m]) => ({ id: cid.slice(0, 8), name: m.name, host: cid === room.host, ctl: canControl(room, cid), perm: permOf(room, cid) }));
 
 app.post('/api/together/:code/join', jsonBody, (req, res) => {
   const room = findRoom(req, res);
@@ -528,8 +588,8 @@ app.post('/api/together/:code/join', jsonBody, (req, res) => {
   if (room.closed) return res.status(404).json({ error: 'That session has ended.' });
   if (room.members.size >= MAX_MEMBERS) return res.status(409).json({ error: 'This session is full.' });
   const cid = crypto.randomUUID();
-  room.members.set(cid, { seen: Date.now(), name: cleanName(req.body?.name, 'Guest') });
-  res.json({ code: room.code, cid, state: room.state, v: room.v, count: room.members.size, people: peopleOf(room), now: Date.now() });
+  room.members.set(cid, { seen: Date.now(), joined: Date.now(), name: cleanName(req.body?.name, 'Guest') });
+  res.json({ code: room.code, cid, state: room.state, v: room.v, count: room.members.size, people: peopleOf(room), ctl: canControl(room, cid), perm: permOf(room, cid), all: room.all, now: Date.now() });
 });
 
 // Guests (and the host) ask "anything new?". `v` is the version they already have.
@@ -542,7 +602,7 @@ app.get('/api/together/:code/poll', (req, res) => {
   if (!m) return res.status(403).json({ error: 'Not part of this session.' });
   m.seen = Date.now();
   if (room.closed) return res.json({ now: Date.now(), closed: true, reason: room.closed.reason });
-  const body = { now: Date.now(), count: room.members.size, v: room.v, host: cid === room.host, people: peopleOf(room) };
+  const body = { now: Date.now(), count: room.members.size, v: room.v, host: cid === room.host, people: peopleOf(room), ctl: canControl(room, cid), perm: permOf(room, cid), all: room.all, notice: room.notice };
   if (String(req.query.v) !== String(room.v)) body.state = room.state;
   res.json(body);
 });
@@ -551,13 +611,43 @@ app.post('/api/together/:code/state', jsonBody, (req, res) => {
   const room = findRoom(req, res);
   if (!room) return;
   if (room.closed) return res.status(404).json({ error: 'That session has ended.' });
-  if (String(req.body?.cid || '') !== room.host) return res.status(403).json({ error: 'Only the host can change playback.' });
-  const state = cleanState(req.body?.state);
+  const cid = String(req.body?.cid || '');
+  if (!room.members.has(cid)) return res.status(403).json({ error: 'Not part of this session.' });
+  const perm = permOf(room, cid);
+  if (!perm.play && !perm.next) return res.status(403).json({ error: 'The host has not given you control.' });
+  // The host's 4-second heartbeat must not overwrite a change someone else just made.
+  if (req.body?.hb && room.state && room.state.by && room.state.by !== cid.slice(0, 8) && Date.now() - room.state.at < 6000) return res.status(204).end();
+  const state = cleanState(req.body?.state, cid.slice(0, 8));
   if (!state) return res.status(400).json({ error: 'Bad state.' });
+  if (cid !== room.host && !perm.play) {
+    // Skip-only people may move to the song that is up next, or the one before it. Nothing else.
+    const old = room.state;
+    const ok = old && state.track && old.track && state.track.id !== old.track.id && (state.track.id === old.queue?.[0]?.id || state.track.id === room.prevId);
+    if (!ok) return res.status(403).json({ error: 'The host only allowed you to skip songs.' });
+  }
+  if (room.state?.track && state.track && room.state.track.id !== state.track.id) room.prevId = room.state.track.id;
   room.state = state;
   room.v++;
-  room.members.get(room.host).seen = Date.now();
+  room.members.get(cid).seen = Date.now();
   res.status(204).end();
+});
+
+// The host decides who may play: one person, or everyone.
+app.post('/api/together/:code/perm', jsonBody, (req, res) => {
+  const room = findRoom(req, res);
+  if (!room) return;
+  if (room.closed) return res.status(404).json({ error: 'That session has ended.' });
+  if (String(req.body?.cid || '') !== room.host) return res.status(403).json({ error: 'Only the host can give control.' });
+  if (typeof req.body?.all === 'boolean') room.all = req.body.all;
+  if (typeof req.body?.target === 'string') {
+    for (const [cid, m] of room.members) {
+      if (cid === room.host || cid.slice(0, 8) !== req.body.target) continue;
+      m.perm = { play: m.perm?.play === true, next: m.perm?.next === true };
+      if (typeof req.body.play === 'boolean') m.perm.play = req.body.play;
+      if (typeof req.body.next === 'boolean') m.perm.next = req.body.next;
+    }
+  }
+  res.json({ people: peopleOf(room), all: room.all });
 });
 
 app.post('/api/together/:code/leave', jsonBody, (req, res) => {
@@ -579,7 +669,15 @@ setInterval(() => {
     for (const [cid, m] of room.members) {
       if (cid !== room.host && now - m.seen > GUEST_GONE_MS) room.members.delete(cid);
     }
-    if (now - room.members.get(room.host).seen > HOST_GONE_MS) closeRoom(room, 'The host left.');
+    const hostM = room.members.get(room.host);
+    if (now - hostM.seen > HOST_GRACE_MS) {
+      const next = [...room.members].filter(([c, m]) => c !== room.host && now - m.seen < ACTIVE_MS).sort((a, b) => (a[1].joined || 0) - (b[1].joined || 0))[0];
+      if (next) {
+        room.host = next[0]; // hand over, so the music keeps going for everyone
+        room.v++;
+        room.notice = { id: now, text: `${next[1].name} is now the host.` };
+      } else if (now - hostM.seen > HOST_GONE_MS) closeRoom(room, 'Nobody was listening, so the session ended.');
+    }
   }
 }, 5000).unref();
 
@@ -663,6 +761,8 @@ app.get('/api/lyrics', async (req, res) => {
 const GOOGLE_CLIENT_ID = String(process.env.GOOGLE_CLIENT_ID || '').trim();
 app.get('/api/config', (_req, res) => res.json({ publicUrl: PUBLIC_URL, googleClientId: GOOGLE_CLIENT_ID }));
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
+mountStream(app, { getYT, ID_RE });
+app.get('/api/version', (_req, res) => res.json({ build: 'nandify-v6', perms: true, handoff: true, stream: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 process.on('unhandledRejection', (err) => console.error('[unhandledRejection]', err));

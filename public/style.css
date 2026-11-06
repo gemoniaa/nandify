@@ -698,3 +698,16 @@ body.is-playing .mini .ib:first-of-type svg { transition: transform 0.2s var(--s
   .view:not([hidden]), .tracklist > li, .tab.active svg, .heartbtn.liked svg, .theme-card.on,
   [data-theme="gotham"] .wall::before, body.is-playing .row.playing .rt::before { animation: none; }
 }
+
+.tg-btn.all { width: 100%; margin: 6px 0 10px; }
+.tg-btn.all.on { background: var(--accent, #1ed760); color: #000; }
+.dots { margin-left: 4px; width: 40px; height: 40px; flex: none; border-radius: 50%; background: var(--fill-2); color: var(--text); font-size: 22px; line-height: 1; display: grid; place-items: center; }
+.dots:active { transform: scale(.92); }
+.perm-panel { margin: 0 6px 8px 58px; padding: 6px 12px; border-radius: 14px; background: var(--fill-2); display: grid; gap: 4px; }
+.perm-opt { display: flex; align-items: center; gap: 12px; padding: 8px 0; font-size: 15px; cursor: pointer; }
+.perm-opt input { width: 22px; height: 22px; flex: none; accent-color: var(--accent); }
+
+.vmode { position: absolute; top: 8px; right: 8px; z-index: 3; padding: 6px 12px; border-radius: 999px; background: rgba(0, 0, 0, 0.62); color: #fff; font-size: 12px; font-weight: 700; -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
+body.audio-mode .video { background-color: #000; background-image: var(--cover); background-size: cover; background-position: center; }
+body.audio-mode .video #yt { visibility: hidden; }
+body.audio-mode:not(.np-open) .video { opacity: 0; pointer-events: none; }

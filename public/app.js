@@ -8,7 +8,7 @@
   /* Saved data (kept only in this browser)                              */
   /* ================================================================== */
   const KEY = 'nandify.v4';
-  const store = { liked: [], playlists: [], pinned: [], recent: [], artists: [], theme: 'classic', shuffle: false, smart: false, name: '' };
+  const store = { liked: [], playlists: [], pinned: [], recent: [], artists: [], theme: 'classic', shuffle: false, smart: false, name: '', sig: { a: {}, h: {}, pos: [], neg: [], sk: {} } };
 
   function loadStore() {
     try {
@@ -19,6 +19,7 @@
       store.shuffle = Boolean(o.shuffle);
       store.smart = Boolean(o.smart);
       if (typeof o.name === 'string') store.name = o.name.slice(0, 24);
+      if (o.sig && typeof o.sig === 'object') store.sig = Object.assign(store.sig, o.sig);
     } catch { /* ignore broken saved data */ }
   }
   function saveStore() {
@@ -26,7 +27,17 @@
   }
   loadStore();
 
-  const slim = (t) => ({ id: t.id, title: t.title, artist: t.artist || '', duration: t.duration || 0, thumbnail: t.thumbnail || '' });
+  const slim = (t) => ({ id: t.id, title: t.title, artist: t.artist || '', album: t.album || '', duration: t.duration || 0, thumbnail: t.thumbnail || '' });
+  /* Taste signals (skips, finished songs, likes, time of day) that make Smart Shuffle personal. */
+  const hourBucket = () => { const h = new Date().getHours(); return h < 5 ? 'night' : h < 12 ? 'morning' : h < 17 ? 'afternoon' : h < 22 ? 'evening' : 'night'; };
+  function signal(t, w, kind) {
+    if (!t) return;
+    const g = store.sig, a = String(t.artist || '').split(/,|&| feat\.?| ft\.?| x /i)[0].trim().toLowerCase(), lb = `${t.title || ''} ${t.artist || ''}`.trim();
+    if (a) g.a[a] = Math.max(-6, Math.min(12, (g.a[a] || 0) + w));
+    if (kind === 'pos') { g.pos = [lb, ...g.pos.filter((x) => x !== lb)].slice(0, 10); g.neg = g.neg.filter((x) => x !== lb); }
+    if (kind === 'neg') { g.neg = [lb, ...g.neg.filter((x) => x !== lb)].slice(0, 10); g.sk[t.id] = (g.sk[t.id] || 0) + 1; }
+    saveStore();
+  }
   const thumb = (t) => t.thumbnail || 'https://i.ytimg.com/vi/' + t.id + '/mqdefault.jpg';
   const isLiked = (id) => store.liked.some((x) => x.id === id);
   const newId = () => 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -45,6 +56,8 @@
       this.playbackRate = 1;
       this._volume = 1;
       this._lastDur = NaN;
+      this.userPausedAt = 0;
+      this._loadedAt = 0;
     }
     init() {
       this.player = new YT.Player('yt', {
@@ -63,6 +76,14 @@
       this.ready = true;
       this.player.setVolume(Math.round(this._volume * 100));
       setInterval(() => {
+        // Keep our play/pause state equal to what the video is really doing (a tap on the video itself,
+        // a blocked autoplay, the phone pausing it ...).
+        const st = this.player.getPlayerState ? this.player.getPlayerState() : undefined;
+        if (st !== undefined) {
+          const fresh = Date.now() - this._loadedAt < 3500;
+          const playing = st === 1 || st === 3 || ((st === -1 || st === 5) && fresh && !this.paused);
+          if (playing === this.paused) { this.paused = !playing; this._emit(playing ? 'play' : 'pause'); }
+        }
         this._emit('timeupdate');
         const d = this.duration;
         if (Number.isFinite(d) && d !== this._lastDur) { this._lastDur = d; this._emit('durationchange'); }
@@ -93,6 +114,7 @@
       return d > 0 ? d : NaN;
     }
     _load(id, start) {
+      this._loadedAt = Date.now();
       if (start > 0) this.player.loadVideoById({ videoId: id, startSeconds: start });
       else this.player.loadVideoById(id);
     }
@@ -102,16 +124,99 @@
       else this.pending = { id, start };
     }
     play() { if (this.ready) this.player.playVideo(); return Promise.resolve(); }
-    pause() { if (this.ready) this.player.pauseVideo(); }
+    pause() { this.userPausedAt = Date.now(); if (this.ready) this.player.pauseVideo(); }
   }
-  const audio = new YTAudio();
+
+  /* The player the rest of the app talks to. AUDIO mode (default) plays a real audio stream in an <audio>
+     element, like native music apps, so it keeps playing in the background and with the screen off.
+     VIDEO mode (or an automatic fallback when no stream is available) plays the YouTube music video. */
+  class Engine extends EventTarget {
+    constructor() {
+      super();
+      this.yt = new YTAudio();
+      this.a = new Audio();
+      this.a.preload = 'auto';
+      this.mode = 'audio';
+      this.pref = 'audio';
+      try { if (localStorage.getItem('nandify.vmode') === 'video') { this.pref = 'video'; this.mode = 'video'; } } catch { /* ignore */ }
+      this.id = ''; this.start = 0; this.fails = 0; this.offUntil = 0; this.userPausedAt = 0;
+      this._started = false; this._timer = 0; this._switching = false; this._notified = false;
+      ['play', 'playing', 'pause', 'ended', 'timeupdate', 'durationchange', 'waiting', 'error'].forEach((n) => {
+        this.yt.addEventListener(n, () => { if (this.mode === 'video') this._emit(n); });
+        this.a.addEventListener(n, () => this._fromAudio(n));
+      });
+    }
+    _emit(n) { this.dispatchEvent(new Event(n)); }
+    _fromAudio(n) {
+      if (this.mode !== 'audio') return;
+      if (n === 'error') { if (!this._started) this._fallback(); return; }
+      if (n === 'pause' && (this._switching || this.a.ended)) return;
+      if (n === 'playing') { this._started = true; this.fails = 0; clearTimeout(this._timer); }
+      this._emit(n);
+    }
+    init() { this.yt.init(); }
+    get error() { return this.mode === 'video' ? this.yt.error : null; }
+    get paused() { return this.mode === 'video' ? this.yt.paused : this.a.paused; }
+    get playbackRate() { return this.mode === 'video' ? this.yt.playbackRate : this.a.playbackRate; }
+    get currentTime() { return this.mode === 'video' ? this.yt.currentTime : (this.a.currentTime || 0); }
+    set currentTime(v) { if (this.mode === 'video') this.yt.currentTime = v; else this.a.currentTime = v; }
+    get duration() { return this.mode === 'video' ? this.yt.duration : (Number.isFinite(this.a.duration) && this.a.duration > 0 ? this.a.duration : NaN); }
+    _formats() {
+      const t = document.createElement('audio'), list = [];
+      if (t.canPlayType('audio/webm; codecs="opus"')) list.push('webm');
+      if (t.canPlayType('audio/mp4; codecs="mp4a.40.2"')) list.push('mp4');
+      return list.join(',') || 'mp4';
+    }
+    _setMode(m) { this.mode = m; document.body.classList.toggle('audio-mode', m === 'audio'); this._emit('modechange'); }
+    load(id, start = 0) {
+      this.id = id; this.start = start; this._started = false; clearTimeout(this._timer);
+      if (this.pref === 'audio' && Date.now() >= this.offUntil) {
+        this.yt.paused = true; try { if (this.yt.ready) this.yt.player.stopVideo(); } catch { /* ignore */ }
+        this._setMode('audio');
+        this._switching = true;
+        this.a.src = '/api/stream/' + id + '?prefer=' + this._formats();
+        this.a.load();
+        if (start > 0) this.a.addEventListener('loadedmetadata', () => { try { this.a.currentTime = start; } catch { /* ignore */ } }, { once: true });
+        this.a.play().catch(() => {}).finally(() => { this._switching = false; });
+        this._timer = setTimeout(() => { if (!this._started && this.mode === 'audio') this._fallback(); }, 15000);
+      } else {
+        this._switchToVideo(start);
+      }
+    }
+    _switchToVideo(start) {
+      this._switching = true;
+      this.a.pause(); this.a.removeAttribute('src'); this.a.load();
+      setTimeout(() => { this._switching = false; }, 300);
+      this._setMode('video');
+      this.yt.load(this.id, start);
+    }
+    _fallback() {
+      clearTimeout(this._timer);
+      this.fails += 1;
+      if (this.fails >= 2) this.offUntil = Date.now() + 10 * 60 * 1000; // audio stream keeps failing: use video for a while
+      if (!this._notified) { this._notified = true; this._emit('fallback'); }
+      this._switchToVideo(this.start);
+    }
+    setPreferred(m) {
+      this.pref = m;
+      try { localStorage.setItem('nandify.vmode', m); } catch { /* ignore */ }
+      if (m === 'audio') this.offUntil = 0;
+      if (!this.id) { this._setMode(m); return; }
+      const pos = this.currentTime || 0;
+      this.load(this.id, pos);
+    }
+    play() { return this.mode === 'video' ? this.yt.play() : this.a.play().catch(() => {}); }
+    pause() { this.userPausedAt = Date.now(); if (this.mode === 'video') this.yt.pause(); else this.a.pause(); }
+  }
+  const audio = new Engine();
+  document.body.classList.toggle('audio-mode', audio.mode === 'audio');
 
   /* ================================================================== */
   /* App state                                                           */
   /* ================================================================== */
   const S = { tab: 'home', ent: null, queue: [], qi: -1, source: '', results: [], seeking: false };
   // Listen together: role is null, 'host' or 'guest'
-  const T = { role: null, code: '', cid: '', people: [], peopleBox: null, members: 1, offset: 0, hb: 0, poll: 0, v: 0, lastPush: 0, last: null, publicUrl: '' };
+  const T = { quiet: false, resume: false, noticeId: undefined, perm: { play: false, next: false }, menu: '', ctl: false, all: false, mute: 0, role: null, code: '', cid: '', people: [], peopleBox: null, members: 1, offset: 0, hb: 0, poll: 0, v: 0, lastPush: 0, last: null, publicUrl: '' };
   const artistCache = new Map(); // lower case name -> { name, thumbnail, tracks }
   const cur = () => S.queue[S.qi] || null;
 
@@ -473,7 +578,7 @@
       store.liked = store.liked.filter((x) => x.id !== t.id);
       toast('Removed from Liked Songs');
     } else {
-      store.liked.unshift(slim(t));
+      store.liked.unshift(slim(t)); signal(t, 2, 'pos');
       toast('Added to Liked Songs');
     }
     saveStore();
@@ -861,7 +966,7 @@
   /* Playback                                                            */
   /* ================================================================== */
   function guestBlock() {
-    if (T.role !== 'guest') return false;
+    if (T.role !== 'guest' || T.ctl) return false;
     toast('Only the host controls playback. Leave the session to play your own music.');
     return true;
   }
@@ -898,9 +1003,23 @@
     toast('Added to queue');
   }
 
+  let curT = null, lastSmart = 0;
+  function maybeSmart() {
+    if (!store.smart || T.role === 'guest' || Date.now() - lastSmart < 15000) return;
+    if (S.queue.slice(S.qi + 1).filter((x) => x.rec).length >= 2) return;
+    lastSmart = Date.now();
+    smartShuffle();
+  }
   function loadAt(i, start = 0) {
     const t = S.queue[i];
     if (!t) return;
+    if (curT && curT.id !== t.id && T.role !== 'guest') { // judge the song we leave: an early skip is bad, a finished song is good
+      const ct = audio.currentTime || 0, d = audio.duration || curT.duration || 0;
+      if (ct > 0 && ct < 30 && d > 40) signal(curT, -1, 'neg');
+      else if (d && ct / d >= 0.8) signal(curT, 1, 'pos');
+    }
+    curT = t;
+    if (T.role !== 'guest') { const a = String(t.artist || '').split(/,|&/)[0].trim().toLowerCase(), hb = hourBucket(); if (a) { const h = (store.sig.h[hb] = store.sig.h[hb] || {}); h[a] = (h[a] || 0) + 1; } }
     S.qi = i;
     audio.load(t.playId || t.id, start);
     document.body.classList.add('has-track');
@@ -910,6 +1029,7 @@
     updateMediaSession();
     markPlaying();
     if (T.role !== 'guest' && S.queue.length - 1 - S.qi < 3) extendQueue();
+    maybeSmart();
     tgPush(true, { playing: true, position: 0 });
   }
 
@@ -982,18 +1102,27 @@
     const seen = new Set();
     const add = (x) => { if (x && !seen.has(x.id) && seeds.length < 6) { seen.add(x.id); seeds.push(x); } };
     add(t);
+    S.queue.slice(Math.max(0, S.qi - 2), S.qi).reverse().forEach(add); // the vibe of what was just played
     pool.forEach(add);
     const count = new Map();
     pool.forEach((x) => { const k = noBar(firstArtist(x.artist)); if (k) count.set(k, (count.get(k) || 0) + 1); });
     const artists = [...count.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map((e) => e[0]);
     const avoid = [...new Set(S.queue.slice(Math.max(0, S.qi - 2), S.qi + 1).map((x) => noBar(firstArtist(x.artist))).filter(Boolean))];
+    const g = store.sig, ent = Object.entries(g.a), hb = (g.h && g.h[hourBucket()]) || {};
     return new URLSearchParams({
+      albums: seeds.map((x) => noBar(x.album)).join('|'),
+      seedArtists: seeds.map((x) => noBar(x.artist)).join('|'),
+      love: ent.filter(([, v]) => v >= 2).map(([k]) => noBar(k)).join('|'),
+      hate: ent.filter(([, v]) => v <= -2).map(([k]) => noBar(k)).join('|'),
+      pos: g.pos.slice(0, 6).map(noBar).join('|'),
+      neg: g.neg.slice(0, 6).map(noBar).join('|'),
+      hour: Object.entries(hb).sort((a, b) => b[1] - a[1]).slice(0, 5).map((e) => noBar(e[0])).join('|'),
       seeds: seeds.map((x) => x.id).join(','),
       titles: seeds.map((x) => noBar(x.title)).join('|'),
       artists: artists.join('|'),
       avoid: avoid.join('|'),
-      exclude: S.queue.slice(-60).map((x) => x.id).join(','),
-      limit: '12',
+      exclude: [...S.queue.slice(-60).map((x) => x.id), ...Object.keys(g.sk).filter((k) => g.sk[k] >= 2).slice(-30)].join(','),
+      limit: '14',
     });
   }
   async function fetchRecommended() {
@@ -1006,12 +1135,12 @@
   // Like Spotify's smart shuffle: after every few songs in the shuffled queue, one new song you may like.
   let smartBusy = false;
   async function smartShuffle() {
-    if (!store.smart || !cur() || smartBusy) return;
+    if (!store.smart || !cur() || smartBusy || T.role === 'guest') return;
     smartBusy = true;
     try {
       const from = cur().id;
       const have = new Set(S.queue.map((x) => x.id));
-      const recs = (await fetchRecommended()).filter((x) => !have.has(x.id)).slice(0, 8);
+      const recs = (await fetchRecommended()).filter((x) => !have.has(x.id)).slice(0, 8).map((x) => ({ ...x, rec: true }));
       if (!recs.length || !store.smart || !cur() || cur().id !== from) return;
       const head = S.queue.slice(0, S.qi + 1);
       const tail = S.queue.slice(S.qi + 1);
@@ -1019,7 +1148,7 @@
       let r = 0;
       tail.forEach((t, i) => {
         out.push(t);
-        if ((i + 1) % 3 === 0 && r < recs.length) out.push(recs[r++]);
+        if ((i + 1) % 2 === 0 && r < recs.length) out.push(recs[r++]);
       });
       while (r < recs.length) out.push(recs[r++]);
       S.queue = [...head, ...out];
@@ -1055,6 +1184,14 @@
     return extending;
   }
 
+  /* ---------- audio / video mode ---------- */
+  const vmodeBtn = $('#vmode');
+  function paintVmode() { if (vmodeBtn) vmodeBtn.textContent = audio.mode === 'audio' ? '\u{1F3A7} Audio  \u00B7  tap for video' : '\u{1F3AC} Video  \u00B7  tap for audio'; }
+  if (vmodeBtn) vmodeBtn.addEventListener('click', (e) => { e.stopPropagation(); if (T.role === 'guest' && !T.ctl) { audio.setPreferred(audio.pref === 'audio' ? 'video' : 'audio'); } else audio.setPreferred(audio.mode === 'audio' ? 'video' : 'audio'); paintVmode(); });
+  audio.addEventListener('modechange', paintVmode);
+  audio.addEventListener('fallback', () => toast('Audio stream is not available for this song, showing the video instead'));
+  paintVmode();
+
   /* ---------- paint the player ---------- */
   function setMarquee(box, text) {
     const sp = box.firstElementChild;
@@ -1069,6 +1206,7 @@
 
   function paintNow(t) {
     el.miniArt.src = thumb(t);
+    document.documentElement.style.setProperty('--cover', 'url("' + thumb(t).replace(/"/g, '') + '")');
     setMarquee(el.miniTitle, t.title);
     setMarquee(el.miniArtist, t.artist);
     el.npTitle.textContent = t.title;
@@ -1139,8 +1277,36 @@
 
   /* ---------- engine events ---------- */
   let errTimer = 0;
-  audio.addEventListener('play', () => { setPlayingUI(true); tgPush(true); });
-  audio.addEventListener('pause', () => { setPlayingUI(false); tgPush(true); });
+  /* Phones pause the video when the browser goes to the background. A silent looping sound keeps the page
+     alive, we resume the video if it was paused by the phone (not by the user) and again when we are back. */
+  const keep = (() => {
+    const n = 8000, b = new Uint8Array(44 + n), v = new DataView(b.buffer);
+    const w = (o, t) => [...t].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+    w(0, 'RIFF'); v.setUint32(4, 36 + n, true); w(8, 'WAVEfmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, 8000, true); v.setUint32(28, 8000, true); v.setUint16(32, 1, true); v.setUint16(34, 8, true); w(36, 'data'); v.setUint32(40, n, true);
+    for (let i = 0; i < n; i++) b[44 + i] = 128 + (i % 2 ? 1 : -1);
+    const a = new Audio(URL.createObjectURL(new Blob([b], { type: 'audio/wav' })));
+    a.loop = true; a.preload = 'auto';
+    return a;
+  })();
+  let wasPlaying = false, resumeTries = 0;
+  const userPaused = () => Date.now() - audio.userPausedAt < 2500;
+  audio.addEventListener('play', () => { setPlayingUI(true); if (audio.mode === 'video') keep.play().catch(() => {}); else keep.pause(); tgPush(true); });
+  audio.addEventListener('pause', () => {
+    setPlayingUI(false);
+    if (document.hidden && wasPlaying && !userPaused() && !audio.error && cur() && resumeTries < 5) {
+      resumeTries += 1; setTimeout(() => { if (audio.paused && !userPaused()) audio.play(); }, 350); return; // the phone paused it, not the listener
+    }
+    if (userPaused() || !document.hidden) keep.pause();
+    tgPush(true);
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { wasPlaying = !audio.paused; resumeTries = 0; return; }
+    if (wasPlaying && audio.paused && cur() && !userPaused()) audio.play();
+    wasPlaying = false;
+    if (T.role) tgPoll();
+  });
+  window.addEventListener('online', () => { if (T.role) tgPoll(); });
   audio.addEventListener('playing', () => {
     clearTimeout(errTimer);
     updatePosition();
@@ -1578,22 +1744,64 @@
     return a;
   }
 
+  function setPerm(body) {
+    if (T.role !== 'host') return;
+    fetch('/api/together/' + T.code + '/perm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cid: T.cid, ...body }) })
+      .then(async (r) => {
+        if (r.ok) return r.json();
+        const j = await r.json().catch(() => null); // our server explains itself in JSON; an old server answers with a plain 404 page
+        throw new Error(j && j.error ? j.error : r.status === 404 ? 'The server is out of date. Push the latest server.js to GitHub.' : 'Error ' + r.status);
+      })
+      .then((d) => { T.people = d.people || T.people; T.all = !!d.all; tgPaint(); })
+      .catch((e) => toast(e.message));
+  }
+
   function renderPeople(box) {
+    const sig = JSON.stringify([T.people, T.all, T.role, T.ctl, T.menu]);
+    if (box._sig === sig) return;
+    box._sig = sig;
     box.textContent = '';
     const mine = T.cid.slice(0, 8);
     const n = T.people.length || T.members;
     const head = mk('div', 'ppl-head');
     head.append(mk('b', '', String(n)), mk('span', '', n === 1 ? 'person listening now' : 'people listening now'));
     box.appendChild(head);
+    if (T.role === 'host') {
+      const all = mk('button', 'tg-btn all' + (T.all ? ' on' : ''), T.all ? 'Everyone can play: ON (tap to turn off)' : 'Let everyone play songs');
+      all.type = 'button';
+      all.addEventListener('click', () => setPerm({ all: !T.all }));
+      box.appendChild(all);
+    }
     T.people.forEach((pr) => {
       const row = mk('div', 'person');
       const av = personAvatar(pr.name);
       av.classList.add('big');
       const tags = mk('div', 'ptags');
       if (pr.host) tags.appendChild(mk('span', 'ptag host', 'Host'));
+      else if (pr.perm && (pr.perm.play || pr.perm.next)) tags.appendChild(mk('span', 'ptag you', pr.perm.play && pr.perm.next ? 'Can play + skip' : pr.perm.play ? 'Can play' : 'Can skip'));
       if (pr.id === mine) tags.appendChild(mk('span', 'ptag you', 'You'));
       row.append(av, mk('div', 'pname', pr.name), tags);
+      if (T.role === 'host' && !pr.host && !T.all) {
+        const b = mk('button', 'dots', '\u22EF');
+        b.type = 'button';
+        b.setAttribute('aria-label', 'Permissions for ' + pr.name);
+        b.addEventListener('click', () => { T.menu = T.menu === pr.id ? '' : pr.id; renderPeople(box); });
+        row.appendChild(b);
+      }
       box.appendChild(row);
+      if (T.role === 'host' && !pr.host && !T.all && T.menu === pr.id) {
+        const panel = mk('div', 'perm-panel');
+        [['play', 'Can play songs (choose, play, pause, seek)'], ['next', 'Can skip to next / previous song']].forEach(([key, label]) => {
+          const lab = mk('label', 'perm-opt');
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.checked = Boolean(pr.perm && pr.perm[key]);
+          cb.addEventListener('change', () => setPerm({ target: pr.id, [key]: cb.checked }));
+          lab.append(cb, mk('span', '', label));
+          panel.appendChild(lab);
+        });
+        box.appendChild(panel);
+      }
     });
   }
 
@@ -1613,9 +1821,11 @@
   }
   el.npPeople.addEventListener('click', () => togetherSheet());
 
-  function tgPush(force, over) {
-    if (T.role !== 'host' || !T.code) return;
+  function tgPush(force, over, hb) {
+    if (!T.role || !T.code || (T.role === 'guest' && !T.ctl)) return;
     const now = Date.now();
+    if (now < T.mute) return; // we are just following someone else's change
+    if (T.quiet && !cur()) return; // just reloaded: do not overwrite the session with an empty player
     if (!force && now - T.lastPush < 400) return;
     T.lastPush = now;
     const t = cur();
@@ -1628,13 +1838,14 @@
     fetch('/api/together/' + T.code + '/state', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cid: T.cid, state }),
-    }).catch(() => {});
+      body: JSON.stringify({ cid: T.cid, state, hb: Boolean(hb) }),
+    }).then(async (r) => { if (r.status === 403 && T.role === 'guest') { const j = await r.json().catch(() => ({})); toast(j.error || 'The host did not allow that.'); if (T.last) { T.mute = 0; applyRemote(T.last); } } }).catch(() => {});
   }
 
   function applyRemote(st) {
     if (!st || T.role !== 'guest') return;
     T.last = st;
+    T.mute = Date.now() + 1500;
     if (!st.track) { audio.pause(); return; }
     const elapsed = st.playing ? Math.max(0, (Date.now() + T.offset - st.at) / 1000) : 0;
     const est = st.position + elapsed;
@@ -1648,6 +1859,27 @@
     S.queue = queue;
     S.qi = 0;
     renderQueue();
+    if (st.playing) {
+      if (audio.paused) audio.play();
+      if (Math.abs(audio.currentTime - est) > 2.5) audio.currentTime = est;
+    } else {
+      if (!audio.paused) audio.pause();
+      if (Math.abs(audio.currentTime - st.position) > 1) audio.currentTime = st.position;
+    }
+  }
+
+  // The host receives a change made by a member who was given control. The host keeps their own queue.
+  function applyRemoteHost(st) {
+    if (!st || T.role !== 'host' || !st.track) return;
+    T.mute = Date.now() + 1500;
+    const elapsed = st.playing ? Math.max(0, (Date.now() + T.offset - st.at) / 1000) : 0;
+    const est = st.position + elapsed;
+    if (!cur() || cur().id !== st.track.id) {
+      let i = S.queue.findIndex((t) => t.id === st.track.id);
+      if (i < 0) { S.queue.splice(S.qi + 1, 0, st.track); i = S.qi + 1; }
+      loadAt(i, est);
+      return;
+    }
     if (st.playing) {
       if (audio.paused) audio.play();
       if (Math.abs(audio.currentTime - est) > 2.5) audio.currentTime = est;
@@ -1676,12 +1908,24 @@
         if (d.count) T.members = d.count;
         if (Array.isArray(d.people)) T.people = d.people;
         if (d.v !== undefined) T.v = d.v;
+        T.all = !!d.all;
+        if (d.host === true && T.role === 'guest') becomeHost();
+        else if (d.host === false && T.role === 'host') becomeGuest();
+        if (T.noticeId === undefined) T.noticeId = d.notice ? d.notice.id : 0;
+        else if (d.notice && d.notice.id !== T.noticeId) { T.noticeId = d.notice.id; toast(d.notice.text); }
+        if (d.perm && T.role === 'guest') {
+          const was = JSON.stringify(T.perm); T.perm = d.perm; T.ctl = !!(d.perm.play || d.perm.next);
+          if (JSON.stringify(T.perm) !== was) toast(!T.ctl ? 'The host took back control.' : d.perm.play && d.perm.next ? 'The host let you play and skip songs.' : d.perm.play ? 'The host let you play songs.' : 'The host let you skip songs.');
+        }
         tgPaint();
-        if (T.role === 'guest' && d.state) applyRemote(d.state);
+        if (d.state && (T.resume || d.state.by !== T.cid.slice(0, 8))) {
+          T.resume = false;
+          (T.role === 'host' ? applyRemoteHost : applyRemote)(d.state);
+        }
       })
       .catch(() => { /* a hiccup: try again on the next round */ })
       .finally(() => {
-        if (T.role && T.code === code) T.poll = setTimeout(tgPoll, T.role === 'guest' ? 1000 : 3000);
+        if (T.role && T.code === code) T.poll = setTimeout(tgPoll, 1000);
       });
   }
 
@@ -1689,7 +1933,7 @@
     if (!T.role) return;
     clearTimeout(T.poll);
     clearInterval(T.hb);
-    T.role = null; T.code = ''; T.cid = ''; T.members = 1; T.people = []; T.peopleBox = null; T.last = null; T.v = 0;
+    tgForget(); T.role = null; T.ctl = false; T.perm = { play: false, next: false }; T.menu = ''; T.all = false; T.quiet = false; T.resume = false; T.code = ''; T.cid = ''; T.members = 1; T.people = []; T.peopleBox = null; T.last = null; T.v = 0;
     tgPaint();
     if (message) toast(message);
   }
@@ -1706,10 +1950,31 @@
     }).catch(() => {});
     tgEnd('You left the session');
   }
-  window.addEventListener('pagehide', () => {
-    if (!T.role || !navigator.sendBeacon) return;
-    navigator.sendBeacon('/api/together/' + T.code + '/leave', new Blob([JSON.stringify({ cid: T.cid })], { type: 'application/json' }));
-  });
+  // A reload, closing the tab or switching apps must NOT end the session: no "leave" is sent when the page
+  // goes away. The server decides (a long silence, or a host hand-over), and the page resumes by itself.
+  const TG_KEY = 'nandify.tg';
+  function tgSave() { try { if (T.role) localStorage.setItem(TG_KEY, JSON.stringify({ role: T.role, code: T.code, cid: T.cid, t: Date.now() })); } catch { /* ignore */ } }
+  function tgForget() { try { localStorage.removeItem(TG_KEY); } catch { /* ignore */ } }
+  function becomeHost() {
+    T.role = 'host'; T.ctl = true; T.perm = { play: true, next: true }; T.menu = '';
+    clearInterval(T.hb); T.hb = setInterval(() => tgPush(true, null, true), 4000);
+    tgSave(); tgPaint(); tgPush(true);
+  }
+  function becomeGuest() {
+    clearInterval(T.hb); T.role = 'guest'; T.ctl = false; T.perm = { play: false, next: false }; T.v = 0; T.menu = '';
+    tgSave(); tgPaint();
+  }
+  function resumeSession() {
+    let o = null;
+    try { o = JSON.parse(localStorage.getItem(TG_KEY) || 'null'); } catch { /* ignore */ }
+    if (!o || !o.code || !o.cid || (o.role !== 'host' && o.role !== 'guest') || Date.now() - o.t > 12 * 3600 * 1000) { tgForget(); return false; }
+    Object.assign(T, { role: o.role, code: o.code, cid: o.cid, members: 1, v: 0, resume: true, quiet: o.role === 'host', noticeId: undefined });
+    if (o.role === 'host') T.hb = setInterval(() => tgPush(true, null, true), 4000);
+    tgPoll(); tgPaint();
+    return true;
+  }
+  // After a reload the host does not push anything until playback is back, or friends would be paused.
+  window.addEventListener('pointerdown', () => { T.quiet = false; }, { passive: true });
 
   async function pickName(raw) {
     let name = String(raw || store.name || '').trim().slice(0, 24);
@@ -1732,9 +1997,9 @@
       });
       if (!r.ok) throw new Error('create');
       const d = await r.json();
-      T.role = 'host'; T.code = d.code; T.cid = d.cid; T.members = 1; T.v = 0; T.people = d.people || [];
-      tgPoll();
-      T.hb = setInterval(() => tgPush(true), 4000);
+      T.role = 'host'; T.code = d.code; T.cid = d.cid; T.members = 1; T.v = 0; T.people = d.people || []; T.noticeId = undefined;
+      tgSave(); tgPoll();
+      T.hb = setInterval(() => tgPush(true, null, true), 4000);
       tgPaint();
       tgPush(true);
       togetherSheet();
@@ -1757,9 +2022,9 @@
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) { toast(d.error || 'Could not join that session.'); return; }
-      T.role = 'guest'; T.code = d.code; T.cid = d.cid; T.members = d.count || 2; T.v = d.v || 0; T.people = d.people || [];
-      T.offset = d.now ? d.now - Date.now() : 0;
-      tgPoll();
+      T.role = 'guest'; T.ctl = !!d.ctl; T.perm = d.perm || T.perm; T.all = !!d.all; T.code = d.code; T.cid = d.cid; T.members = d.count || 2; T.v = d.v || 0; T.people = d.people || [];
+      T.offset = d.now ? d.now - Date.now() : 0; T.noticeId = undefined;
+      tgSave(); tgPoll();
       tgPaint();
       toast('Joined ' + d.code);
       if (d.state) applyRemote(d.state);
@@ -1774,7 +2039,7 @@
     if (T.role) {
       openSheet({
         title: 'Listening together',
-        sub: T.role === 'host' ? 'You are the host. Friends follow your playback.' : 'You are following the host.',
+        sub: T.role === 'host' ? 'You are the host. Tap the three dots next to a friend to let them play or skip songs.' : (T.ctl ? 'The host gave you control: ' + (T.perm.play && T.perm.next ? 'play and skip.' : T.perm.play ? 'play songs.' : 'skip songs.') : 'You are following the host.'),
         build(body) {
           body.appendChild(mk('div', 'tg-code', T.code));
           const box = mk('div', 'people');
@@ -1837,7 +2102,9 @@
   }
   el.navTogether.addEventListener('click', togetherSheet);
 
+  const resumed = resumeSession();
   (function inviteFromLink() {
+    if (resumed) return;
     const code = (new URLSearchParams(location.search).get('join') || '').toUpperCase();
     if (!/^[A-Z0-9]{5}$/.test(code)) return;
     try { history.replaceState(null, '', location.pathname); } catch { /* ignore */ }
